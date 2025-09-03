@@ -5,7 +5,6 @@ import time
 from datetime import datetime
 from urllib.parse import quote
 import json
-from flatten_json import flatten
 
 # Configuración segura desde secretos
 TOKEN = os.getenv("API_TOKEN")
@@ -29,39 +28,10 @@ QUERY_CONFIG = [
         "params": {
             "orderby": "civi_snapshot_date desc",
             "take": str(PAGE_SIZE),
-            "skip": 0
+            "skip": 0            
         }
     }
 ]
-
-def install_flatten_json():
-    """Instalar la librería flatten-json si no está disponible"""
-    try:
-        import flatten_json
-    except ImportError:
-        print("📦 Instalando librería flatten-json...")
-        import subprocess
-        subprocess.check_call(["pip", "install", "flatten-json"])
-        import flatten_json
-    return flatten_json
-
-def flatten_json_data(data):
-    """Aplanar JSON anidado a una estructura plana"""
-    flattened_data = []
-    
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                flattened_item = flatten(item, separator='_')
-                flattened_data.append(flattened_item)
-            else:
-                flattened_data.append({'value': item})
-    elif isinstance(data, dict):
-        flattened_data.append(flatten(data, separator='_'))
-    else:
-        flattened_data.append({'value': data})
-    
-    return flattened_data
 
 def build_url(endpoint, params):
     param_parts = []
@@ -71,38 +41,67 @@ def build_url(endpoint, params):
     url = f"{BASE_URL}{endpoint}?{'&'.join(param_parts)}"
     return url
 
+def extract_message_data(data):
+    """Extrae el array 'message' de la respuesta JSON"""
+    try:
+        # Verificar si la respuesta tiene la estructura esperada
+        if isinstance(data, dict) and 'message' in data:
+            message_data = data['message']
+            
+            if isinstance(message_data, list):
+                print(f"✅ Array 'message' encontrado con {len(message_data)} elementos")
+                return message_data
+            else:
+                print(f"⚠️  'message' no es un array, es: {type(message_data)}")
+                return None
+        else:
+            print(f"⚠️  No se encontró clave 'message' en la respuesta")
+            print(f"🔍 Keys disponibles: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error extrayendo datos de 'message': {e}")
+        return None
+
 def fetch_data_page(url, name, page_number):
     print(f"📄 Consultando página {page_number} para {name}")
     try:
         response = requests.get(url, headers=HEADERS, timeout=60)
         response.raise_for_status()
         
-        # Debug: ver estructura de la respuesta
         data = response.json()
         print(f"📋 Tipo de respuesta: {type(data)}")
         
-        if isinstance(data, dict):
-            print(f"🔍 Keys en la respuesta: {list(data.keys())}")
-            # Guardar muestra de la respuesta para análisis
-            with open(f'debug_response_page_{page_number}.json', 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+        # Guardar respuesta completa para debug
+        debug_filename = f"debug_page_{page_number}.json"
+        with open(debug_filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"📁 Respuesta guardada en: {debug_filename}")
         
-        # Aplanar el JSON
-        flattened_data = flatten_json_data(data)
+        # Extraer el array 'message'
+        message_array = extract_message_data(data)
         
-        if not flattened_data:
-            print(f"⚠️  Página {page_number} no devolvió datos válidos")
+        if not message_array:
+            print(f"❌ No se pudo extraer el array 'message' de la página {page_number}")
             return None, False
         
-        # Crear DataFrame
-        df = pd.DataFrame(flattened_data)
+        # Crear DataFrame directamente desde el array message
+        df = pd.DataFrame(message_array)
+        
+        if df.empty:
+            print(f"⚠️  DataFrame vacío después de procesar 'message'")
+            return None, False
         
         # Añadir metadatos
         df["load_timestamp"] = datetime.now().isoformat()
         df["page_number"] = page_number
         
         print(f"📊 Página {page_number}: {len(df)} registros, {len(df.columns)} columnas")
-        print(f"🏷️  Columnas: {list(df.columns)[:10]}{'...' if len(df.columns) > 10 else ''}")
+        print(f"🏷️  Primeras 5 columnas: {list(df.columns)[:5]}")
+        
+        # Mostrar preview de los datos
+        print(f"👀 Preview de los datos:")
+        print(df.head(2).to_string(index=False))
         
         # Verificar si hay más páginas
         has_more_pages = len(df) == PAGE_SIZE
@@ -110,7 +109,7 @@ def fetch_data_page(url, name, page_number):
         return df, has_more_pages
         
     except Exception as e:
-        print(f"⚠️  Error en página {page_number}: {str(e)}")
+        print(f"❌ Error en página {page_number}: {str(e)}")
         return None, False
 
 def save_data_csv(df, name):
@@ -119,32 +118,36 @@ def save_data_csv(df, name):
     filename = f"Historico_{timestamp}.csv"
     path = f"data/{filename}"
     
-    # Guardar como CSV
-    df.to_csv(path, index=False, encoding='utf-8', sep=',')
-    
-    # Verificar que el archivo se creó correctamente
-    if os.path.exists(path):
-        file_size = os.path.getsize(path) / 1024 / 1024  # MB
-        print(f"💾 CSV guardado: {path}")
-        print(f"📊 Tamaño: {file_size:.2f} MB")
-        print(f"📈 Registros: {len(df)}")
-        print(f"🏷️  Columnas: {len(df.columns)}")
+    try:
+        # Guardar como CSV
+        df.to_csv(path, index=False, encoding='utf-8')
         
-        # Mostrar preview
-        print("\n📋 PREVIEW DEL CSV:")
-        print(df.head(3).to_string())
-        
-        return path
-    else:
-        print("❌ Error: No se pudo crear el archivo CSV")
+        # Verificar que el archivo se creó correctamente
+        if os.path.exists(path):
+            file_size = os.path.getsize(path) / 1024 / 1024  # MB
+            print(f"✅ CSV guardado exitosamente: {path}")
+            print(f"📊 Tamaño: {file_size:.2f} MB")
+            print(f"📈 Registros: {len(df)}")
+            print(f"🏷️  Columnas: {len(df.columns)}")
+            
+            # Mostrar estructura del CSV
+            print("\n📋 ESTRUCTURA DEL CSV:")
+            print(f"Columnas: {list(df.columns)}")
+            print(f"\nPrimeras 2 filas:")
+            print(df.head(2).to_string(index=False))
+            
+            return path
+        else:
+            print("❌ Error: No se pudo crear el archivo CSV")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error guardando CSV: {e}")
         return None
 
 def main():
-    # Instalar dependencias necesarias
-    install_flatten_json()
-    
     print("🚀 Iniciando consulta paginada para Histórico de Inventarios")
-    print("📝 Los datos se guardarán en formato CSV organizado por filas y columnas")
+    print("🎯 Extrayendo específicamente el array 'message' para CSV")
     
     start_time = time.time()
     all_data = pd.DataFrame()
@@ -153,7 +156,7 @@ def main():
     page_number = 1
     has_more_pages = True
     
-    while has_more_pages:
+    while has_more_pages and page_number <= 10:  # Límite de 10 páginas para prueba
         query_params = query["params"].copy()
         query_params["skip"] = (page_number - 1) * PAGE_SIZE
         
@@ -163,8 +166,8 @@ def main():
         df_page, has_more_pages = fetch_data_page(url, name, page_number)
         
         if df_page is not None and not df_page.empty:
-            # Concatenar datos manteniendo todas las columnas
-            all_data = pd.concat([all_data, df_page], ignore_index=True, sort=False)
+            # Concatenar datos
+            all_data = pd.concat([all_data, df_page], ignore_index=True)
             print(f"📦 Total acumulado: {len(all_data)} registros")
             
             if has_more_pages:
@@ -175,22 +178,21 @@ def main():
             break
         
         page_number += 1
-        
-        # Límite de seguridad
-        if page_number > 10:  # Reducido para pruebas
-            print("⚠️  Límite de páginas alcanzado (10 páginas)")
-            break
 
     # Guardar datos finales
     if not all_data.empty:
+        print(f"\n💾 Guardando datos finales...")
+        print(f"📊 Total de registros a guardar: {len(all_data)}")
+        print(f"🏷️  Total de columnas: {len(all_data.columns)}")
+        
         csv_path = save_data_csv(all_data, name)
+        
         if csv_path:
-            print(f"\n✅ PROCESO COMPLETADO EXITOSAMENTE")
-            print(f"📁 Archivo: {csv_path}")
+            print(f"\n🎉 PROCESO COMPLETADO EXITOSAMENTE")
+            print(f"📁 Archivo CSV: {csv_path}")
             print(f"📊 Total registros: {len(all_data)}")
-            print(f"🏷️  Total columnas: {len(all_data.columns)}")
         else:
-            print("❌ Error al guardar el archivo CSV")
+            print("❌ Error al guardar el archivo CSV final")
     else:
         print("❌ No se obtuvieron datos para guardar")
 
