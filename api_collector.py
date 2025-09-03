@@ -43,138 +43,61 @@ def build_url(endpoint, params):
     url = f"{BASE_URL}{endpoint}?{'&'.join(param_parts)}"
     return url
 
+# ... (código anterior igual)
+
 def fetch_data_page(url, name, page_number):
     print(f"📄 Consultando página {page_number} para {name}")
     try:
         response = requests.get(url, headers=HEADERS, timeout=60)
         response.raise_for_status()
+        
+        # Guardar respuesta cruda para debug
+        raw_response = response.text
+        print(f"📄 Respuesta cruda (primeros 500 chars): {raw_response[:500]}...")
+        
         data = response.json()
         
-        # Debug: Ver estructura de la respuesta
-        print(f"📋 Estructura de respuesta: {type(data)}")
-        if isinstance(data, list):
-            print(f"📊 Número de elementos en array: {len(data)}")
-        elif isinstance(data, dict):
-            print(f"📊 Keys en objeto: {list(data.keys())}")
+        # Debug detallado
+        print(f"🔍 Tipo de respuesta: {type(data)}")
+        if isinstance(data, dict):
+            print(f"🔍 Keys del objeto: {list(data.keys())}")
+            for key in data.keys():
+                if isinstance(data[key], (list, dict)):
+                    print(f"🔍 Tipo de '{key}': {type(data[key])}")
+                    if isinstance(data[key], list):
+                        print(f"🔍 Tamaño de '{key}': {len(data[key])}")
         
-        if not data:
-            print(f"⚠️  Página {page_number} de {name} no devolvió datos.")
+        # Procesar la respuesta
+        records = []
+        
+        if isinstance(data, list):
+            records = data
+        elif isinstance(data, dict):
+            # Buscar cualquier clave que contenga un array
+            for key, value in data.items():
+                if isinstance(value, list):
+                    records = value
+                    break
+            # Si no encontramos array, usar el dict completo como único registro
+            if not records:
+                records = [data]
+        else:
+            print(f"⚠️  Tipo de respuesta no reconocido: {type(data)}")
             return None, False
             
-        if isinstance(data, dict) and data.get("error"):
-            print(f"⚠️  Error en página {page_number} de {name}: {data.get('error')}")
-            return None, False
+        # Crear DataFrame
+        df = pd.DataFrame(records)
         
-        # Procesar diferentes estructuras de respuesta
-        if isinstance(data, list):
-            # Si la respuesta es directamente un array de objetos
-            df = pd.DataFrame(data)
-        elif isinstance(data, dict) and 'data' in data:
-            # Si la respuesta tiene estructura {data: [], metadata: {}}
-            df = pd.DataFrame(data['data'])
-        elif isinstance(data, dict) and 'results' in data:
-            # Si la respuesta tiene estructura {results: [], count: X}
-            df = pd.DataFrame(data['results'])
-        elif isinstance(data, dict) and 'items' in data:
-            # Si la respuesta tiene estructura {items: [], total: X}
-            df = pd.DataFrame(data['items'])
-        else:
-            # Intentar normalizar cualquier otra estructura
-            df = pd.json_normalize(data)
+        if df.empty:
+            print(f"⚠️  Página {page_number} devolvió DataFrame vacío")
+            return None, False
             
         df["load_timestamp"] = datetime.now().isoformat()
         df["page_number"] = page_number
         
-        # Verificar si hay más páginas (si obtenemos menos registros de los solicitados)
         has_more_pages = len(df) == PAGE_SIZE
         return df, has_more_pages
         
-    except requests.exceptions.RequestException as e:
-        print(f"⚠️  Error en página {page_number} de {name}: {e}")
-        return None, False
-    except ValueError as e:
-        print(f"⚠️  Error al decodificar JSON en página {page_number} de {name}: {e}")
-        print(f"📄 Contenido de respuesta: {response.text[:500]}...")  # Mostrar parte del contenido para debug
-        return None, False
     except Exception as e:
-        print(f"⚠️  Error inesperado en página {page_number} de {name}: {e}")
+        print(f"⚠️  Error en página {page_number}: {e}")
         return None, False
-
-def save_data_csv(df, name):
-    os.makedirs("data", exist_ok=True)
-    # Formato: Histórico_YYYY-MM-DD_HH-MM-SS.csv
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"Historico_{timestamp}.csv"
-    path = f"data/{filename}"
-    
-    # Guardar como CSV con encoding UTF-8
-    df.to_csv(path, index=False, encoding='utf-8')
-    print(f"💾 Guardado: {path} - {len(df)} registros")
-    
-    # Mostrar preview del CSV
-    print(f"📋 Primeras 3 filas del CSV:")
-    print(df.head(3).to_string())
-    print(f"📊 Columnas: {list(df.columns)}")
-    
-    return path
-
-def main():
-    print("🚀 Iniciando consulta paginada para Histórico de Inventarios")
-    start_time = time.time()
-
-    all_data = pd.DataFrame()
-    query = QUERY_CONFIG[0]  # Solo la primera consulta
-    name = query["name"]
-    page_number = 1
-    
-    has_more_pages = True
-    
-    while has_more_pages:
-        # Construir URL con paginación
-        query_params = query["params"].copy()
-        query_params["skip"] = (page_number - 1) * PAGE_SIZE
-        
-        url = build_url(ENDPOINTS[name], query_params)
-        print(f"🔗 URL: {url}")
-        
-        # Consultar página
-        df_page, has_more_pages = fetch_data_page(url, name, page_number)
-        
-        if df_page is not None and not df_page.empty:
-            # Concatenar datos
-            all_data = pd.concat([all_data, df_page], ignore_index=True)
-            print(f"📊 Página {page_number}: {len(df_page)} registros - Total acumulado: {len(all_data)}")
-            
-            # Espera de 20 segundos entre páginas
-            if has_more_pages:
-                print(f"⏳ Esperando {REQUEST_DELAY} segundos antes de la siguiente página...")
-                time.sleep(REQUEST_DELAY)
-        else:
-            print(f"❌ Error en página {page_number} o sin datos, deteniendo la consulta.")
-            break
-        
-        page_number += 1
-        
-        # Límite de seguridad (máximo 70 páginas para 700,000 registros)
-        if page_number > 70:
-            print("⚠️  Límite máximo de páginas alcanzado (70 páginas)")
-            break
-
-    # Guardar todos los datos en CSV
-    if not all_data.empty:
-        file_path = save_data_csv(all_data, name)
-        print(f"✅ Proceso completado. Total de registros obtenidos: {len(all_data)}")
-        print(f"📁 Archivo guardado como: {file_path}")
-        
-        # Información adicional sobre el CSV
-        print(f"📈 Dimensiones del DataFrame: {all_data.shape}")
-        print(f"🏷️  Columnas en el CSV: {len(all_data.columns)}")
-        
-    else:
-        print("❌ No se obtuvieron datos.")
-
-    duration = time.time() - start_time
-    print(f"⏱️  Tiempo total del proceso: {duration:.2f} segundos")
-
-if __name__ == "__main__":
-    main()
