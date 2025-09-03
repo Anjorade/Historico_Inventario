@@ -29,7 +29,6 @@ QUERY_CONFIG = [
             "orderby": "civi_snapshot_date desc",
             "take": str(PAGE_SIZE),  # Usar PAGE_SIZE dinámico
             "skip": 0,  # Inicializar skip en 0
-            #"where": "ctxn_movement_type ilike '261%%' and (ctxn_transaction_date > current_date - 120) and (ctxn_warehouse_code ilike '1145') and (ctxn_primary_uom_code ilike 'Und')"
         }
     }
 ]
