@@ -19,7 +19,7 @@ MAX_PAGES = 100  # Límite máximo de páginas para 1,000,000 registros
 
 # ENDPOINTS
 ENDPOINTS = {
-    "Consulta_1": "System.MaterialTransactions.List.View1"
+    "Consulta_1": "System.InventoryItemsSnap.List.View1"
 }
 
 # Configuración de la consulta
@@ -29,8 +29,7 @@ QUERY_CONFIG = [
         "params": {
             "orderby": "ctxn_transaction_date desc",
             "take": str(PAGE_SIZE),
-            "skip": 0,
-            "where": "ctxn_movement_type ilike '261%%' and (ctxn_transaction_date > current_date - 120) and (ctxn_warehouse_code ilike '1145') and (ctxn_primary_uom_code ilike 'Und')"
+            "skip": 0
         }
     }
 ]
