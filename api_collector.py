@@ -27,7 +27,7 @@ QUERY_CONFIG = [
     {
         "name": "Consulta_1",
         "params": {
-            "orderby": "ctxn_transaction_date desc",
+            "orderby": "civi_snapshot_date desc",
             "take": str(PAGE_SIZE),
             "skip": 0
         }
