@@ -1,9 +1,7 @@
-name: Historico Inventarios CSV
+name: Historico Inventarios - Ejecución Manual
 
 on:
-  schedule:
-    - cron: '0 6 * * *'  # 6 AM UTC (1 AM hora Colombia)
-  workflow_dispatch:
+  workflow_dispatch:  # Solo ejecución manual
 
 env:
   API_TOKEN: ${{ secrets.API_TOKEN }}
@@ -11,15 +9,11 @@ env:
 
 jobs:
   collect-data:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120  # Aumentar timeout por la paginación
+    runs-on: ubuntu-latest  # Usar la última versión para mejor rendimiento
+    timeout-minutes: 45  # Reducido porque debería ser más rápido
 
     steps:
     - uses: actions/checkout@v4
-
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -37,20 +31,17 @@ jobs:
       run: |
         echo "📂 Archivos generados:"
         ls -lh data/
-        echo "📊 Tamaño de archivos CSV:"
-        du -h data/*.csv
-
-    - name: Commit and push data
-      run: |
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "actions@github.com"
-        git add data/
-        git diff --quiet && git diff --staged --quiet || \
-          (git commit -m "Auto-update: Historico Inventarios $(date +'%Y-%m-%d')" && git push)
+        echo "📊 Tamaño de archivos:"
+        du -h data/*
 
     - name: Upload CSV as artifact
       uses: actions/upload-artifact@v4
       with:
         name: historico-inventarios-csv
-        path: data/*.csv
-        retention-days: 7
+        path: data/*
+        retention-days: 2
+
+    - name: Clean up files
+      run: |
+        # Limpiar archivos temporales
+        rm -f debug_*.txt debug_*.json
