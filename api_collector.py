@@ -10,232 +10,196 @@ TOKEN = os.getenv("API_TOKEN")
 BASE_URL = os.getenv("API_BASE_URL")
 HEADERS = {"token": TOKEN}
 
-# Configuración - Sin modificar delays
-REQUEST_DELAY = 20  # Mantener 20 segundos entre páginas
+# Configuración
+REQUEST_DELAY = 20
 PAGE_SIZE = 15000
-MAX_PAGES = 4
+MAX_PAGES = 2
 
-# ENDPOINTS - Actualizado
-ENDPOINTS = {
-    "Consulta_1": "System.InventoryItemsSnap.List.View1"
-}
+# Endpoint
+ENDPOINT = "System.InventoryItemsSnap.List.View1"
 
-# Configuración de la consulta - Simplificada
-QUERY_CONFIG = [
-    {
-        "name": "Consulta_1",
-        "params": {
-            "orderby": "civi_snapshot_date desc",
-            "take": str(PAGE_SIZE),
-            "skip": 0
-        }
+def build_url(skip):
+    """Construye URL"""
+    params = {
+        "orderby": "civi_snapshot_date desc",
+        "take": PAGE_SIZE,
+        "skip": skip
     }
-]
+    param_str = "&".join([f"{k}={quote(str(v))}" for k, v in params.items()])
+    return f"{BASE_URL}{ENDPOINT}?{param_str}"
 
-def build_url(endpoint, params):
-    """Construye URL sin modificaciones"""
-    param_parts = []
-    for key, value in params.items():
-        encoded_value = quote(str(value))
-        param_parts.append(f"{key}={encoded_value}")
-    url = f"{BASE_URL}{endpoint}?{'&'.join(param_parts)}"
-    return url
-
-def fix_encoding(text):
-    """Corrige caracteres especiales de forma optimizada"""
+def fix_encoding_complete(text):
+    """Corrección completa de encoding para caracteres españoles"""
     if not isinstance(text, str):
         return text
     
-    # Mapa de corrección de caracteres mal codificados
-    encoding_fixes = {
+    # Si el texto parece estar en Latin-1 pero debería ser UTF-8
+    try:
+        # Intentar decodificar como Latin-1 y luego re-encodar a UTF-8
+        if any(char in text for char in ['Ã', 'Â', 'â']):
+            # Decodificar como Latin-1 y luego codificar como UTF-8
+            corrected = text.encode('latin-1').decode('utf-8')
+            return corrected
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    
+    # Mapa de correcciones específicas para caracteres comunes
+    encoding_map = {
         'Ã': 'Í', 'Ã': 'í', 'Ã¡': 'á', 'Ã©': 'é',
         'Ã­': 'í', 'Ã³': 'ó', 'Ãº': 'ú', 'Ã±': 'ñ',
-        'Ã': 'Ñ', 'Â¡': '¡', 'Â¿': '¿', 'â': '"',
-        'â': '"', 'â': "'", 'â': "'", 'â¦': '...'
+        'Ã': 'Ñ', 'Â¡': '¡', 'Â¿': '¿', 'Ã€': 'À',
+        'Ã': 'È', 'ÃŒ': 'Ì', 'Ã': 'Ò', 'Ã™': 'Ù',
+        'Ã§': 'ç', 'Ã£': 'ã', 'Ãµ': 'õ', 'Ãª': 'ê',
+        'Ã®': 'î', 'Ã´': 'ô', 'Ã»': 'û', 'Ã¤': 'ä',
+        'Ã«': 'ë', 'Ã¯': 'ï', 'Ã¶': 'ö', 'Ã¼': 'ü',
+        'Ã¿': 'ÿ', 'Ã¦': 'æ', 'Å': 'œ', 'Å¡': 'š',
+        'Å¾': 'ž', 'Å¸': 'Ÿ', 'â‚¬': '€', 'â€š': '‚',
+        'â€ž': '„', 'â€¦': '…', 'â€¡': '‡', 'â€°': '‰',
+        'â€¹': '‹', 'â€˜': '‘', 'â€™': '’', 'â€œ': '“',
+        'â€¢': '•', 'â€“': '–', 'â€”': '—', 'â„¢': '™',
+        'â€º': '›'
     }
     
-    for wrong, correct in encoding_fixes.items():
+    for wrong, correct in encoding_map.items():
         text = text.replace(wrong, correct)
     
     return text
 
 def process_dataframe_encoding(df):
-    """Procesa DataFrame para corregir encoding en columnas de texto"""
-    text_columns = df.select_dtypes(include=['object']).columns
+    """Procesa todas las columnas de texto para corregir encoding"""
+    print("🔧 Corrigiendo encoding de caracteres especiales...")
     
-    for column in text_columns:
-        df[column] = df[column].apply(lambda x: fix_encoding(x) if isinstance(x, str) else x)
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            # Aplicar corrección a todos los valores string
+            df[col] = df[col].apply(lambda x: fix_encoding_complete(x) if isinstance(x, str) else x)
     
     return df
 
-def extract_message_data(data):
-    """Extrae el array 'message' de la respuesta JSON"""
-    try:
-        if isinstance(data, dict) and 'message' in data:
-            message_data = data['message']
-            if isinstance(message_data, list):
-                return message_data
-        return None
-    except:
-        return None
-
-def fetch_data_page(url, name, page_number, expected_records=PAGE_SIZE):
+def fetch_data_page(page_number, skip):
     """Obtiene una página de datos"""
-    print(f"📄 Consultando página {page_number} para {name}")
+    url = build_url(skip)
     
     try:
         response = requests.get(url, headers=HEADERS, timeout=60)
+        
+        # Forzar encoding UTF-8 en la respuesta
         response.encoding = 'utf-8'
         response.raise_for_status()
         
         data = response.json()
-        message_array = extract_message_data(data)
         
-        if not message_array:
-            return None, False
-        
-        df = pd.DataFrame(message_array)
-        
-        if df.empty:
-            return None, False
-        
-        # Corregir encoding
-        df = process_dataframe_encoding(df)
-        
-        print(f"✅ Página {page_number}: {len(df):,} registros obtenidos")
-        
-        # Verificar si hay más páginas
-        has_more_pages = len(df) >= expected_records
-        
-        return df, has_more_pages
+        # Extraer array 'message'
+        if isinstance(data, dict) and 'message' in data and isinstance(data['message'], list):
+            df = pd.DataFrame(data['message'])
+            
+            if not df.empty:
+                # Aplicar corrección de encoding
+                df = process_dataframe_encoding(df)
+                print(f"✅ Página {page_number}: {len(df):,} registros")
+                return df, True
+            
+        return None, False
         
     except requests.exceptions.Timeout:
-        print(f"⏰ Timeout en página {page_number}")
+        print(f"⏰ Timeout página {page_number}")
         return None, True
         
     except Exception as e:
-        print(f"❌ Error en página {page_number}: {str(e)}")
+        print(f"❌ Error página {page_number}: {str(e)}")
         return None, False
 
-def save_csv_chunks(df, base_filename):
-    """Divide y guarda el DataFrame en múltiples archivos CSV"""
-    os.makedirs("data", exist_ok=True)
-    saved_files = []
+def save_csv_with_correct_encoding(df, filename):
+    """Guarda CSV con encoding UTF-8 garantizado"""
+    filepath = f"data/{filename}"
     
-    # Dividir en chunks de 300,000 registros cada uno
-    chunk_size = 300000
-    total_records = len(df)
-    total_chunks = (total_records // chunk_size) + 1
+    # Guardar con UTF-8 y forzar comillas para preservar encoding
+    df.to_csv(filepath, index=False, encoding='utf-8', quoting=1)
     
-    print(f"📦 Dividiendo {total_records:,} registros en {total_chunks} chunks...")
+    # Verificar que el encoding sea correcto
+    file_size = os.path.getsize(filepath) / 1024 / 1024
+    print(f"💾 {filename}: {len(df):,} filas, {file_size:.1f} MB")
     
-    for chunk_num in range(total_chunks):
-        start_idx = chunk_num * chunk_size
-        end_idx = min((chunk_num + 1) * chunk_size, total_records)
-        chunk_df = df.iloc[start_idx:end_idx]
-        
-        if not chunk_df.empty:
-            if total_chunks > 1:
-                filename = f"{base_filename}_part{chunk_num + 1}_of{total_chunks}.csv"
-            else:
-                filename = f"{base_filename}.csv"
-            
-            filepath = f"data/{filename}"
-            
-            # Guardar como CSV sin comprimir con UTF-8
-            chunk_df.to_csv(filepath, index=False, encoding='utf-8')
-            
-            file_size = os.path.getsize(filepath) / 1024 / 1024
-            print(f"💾 {filename}: {len(chunk_df):,} filas, {file_size:.2f} MB")
-            
-            saved_files.append(filepath)
+    # Verificación rápida de encoding
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='strict') as f:
+            first_line = f.readline()
+            if 'Ã' in first_line or 'Â' in first_line:
+                print(f"⚠️  Posible problema de encoding en {filename}")
+    except:
+        pass
     
-    return saved_files
+    return filepath
 
 def main():
     print("🚀 INICIANDO CONSULTA - Histórico de Inventarios")
     print("=" * 60)
-    print(f"📊 Página size: {PAGE_SIZE:,} registros")
-    print(f"⏱️ Delay entre páginas: {REQUEST_DELAY} segundos")
-    print(f"🎯 Total esperado: {PAGE_SIZE * MAX_PAGES:,} registros")
+    print("🔠 Encoding: UTF-8 con corrección de caracteres especiales")
     print("=" * 60)
     
     start_time = time.time()
     all_data = []
-    query = QUERY_CONFIG[0]
-    name = query["name"]
     page_number = 1
     has_more_pages = True
-    total_expected = 700000
     
     try:
         while has_more_pages and page_number <= MAX_PAGES:
-            # Construir URL con parámetros originales
-            query_params = query["params"].copy()
-            query_params["skip"] = (page_number - 1) * PAGE_SIZE
-            query_params["take"] = PAGE_SIZE
+            skip = (page_number - 1) * PAGE_SIZE
+            df_page, has_more_pages = fetch_data_page(page_number, skip)
             
-            url = build_url(ENDPOINTS[name], query_params)
-            
-            df_page, has_more_pages = fetch_data_page(url, name, page_number, PAGE_SIZE)
-            
-            if df_page is not None and not df_page.empty:
+            if df_page is not None:
                 all_data.append(df_page)
                 current_total = sum(len(df) for df in all_data)
                 
-                # Mostrar progreso cada 2 páginas
                 if page_number % 2 == 0:
-                    progress = (current_total / total_expected * 100)
-                    print(f"📊 Progreso: {current_total:,} registros ({progress:.1f}%)")
+                    print(f"📊 Progreso: {current_total:,} registros")
                 
                 if has_more_pages:
-                    print(f"⏳ Esperando {REQUEST_DELAY} segundos...")
                     time.sleep(REQUEST_DELAY)
             else:
-                print(f"⏹️ Fin de datos en página {page_number}")
-                break
+                has_more_pages = False
             
             page_number += 1
-            
-            if len(all_data) >= total_expected:
-                print(f"🎉 ¡Meta alcanzada! {len(all_data):,} registros")
-                break
 
     except KeyboardInterrupt:
-        print("\n⏹️ Ejecución interrumpida por el usuario")
+        print("\n⏹️ Ejecución interrumpida")
     
     # Consolidar y guardar datos
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         total_records = len(final_df)
         
-        print(f"\n💾 Guardando {total_records:,} registros...")
+        print(f"\n💾 Guardando {total_records:,} registros con encoding UTF-8...")
         
-        # Generar nombre base con timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        base_filename = f"Historico_{timestamp}"
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         
-        # Guardar en chunks
-        saved_files = save_csv_chunks(final_df, base_filename)
-        
-        if saved_files:
-            print(f"\n✅ PROCESO COMPLETADO EXITOSAMENTE")
-            print(f"📁 Archivos generados en carpeta 'data':")
-            for file_path in saved_files:
-                file_size = os.path.getsize(file_path) / 1024 / 1024
-                print(f"   • {os.path.basename(file_path)} ({file_size:.1f} MB)")
+        # Dividir en chunks si es necesario
+        if total_records > 300000:
+            chunk_size = 300000
+            chunks = (total_records // chunk_size) + 1
             
-            print(f"📊 Total registros guardados: {total_records:,}")
+            for i in range(chunks):
+                start_idx = i * chunk_size
+                end_idx = min((i + 1) * chunk_size, total_records)
+                chunk_df = final_df.iloc[start_idx:end_idx]
+                
+                filename = f"Historico_{timestamp}_part{i+1}.csv"
+                save_csv_with_correct_encoding(chunk_df, filename)
         else:
-            print("❌ Error al guardar los archivos CSV")
+            filename = f"Historico_{timestamp}.csv"
+            save_csv_with_correct_encoding(final_df, filename)
+        
+        print(f"\n✅ PROCESO COMPLETADO")
+        print(f"📊 Registros totales: {total_records:,}")
+        print("🔠 Encoding: UTF-8 con caracteres especiales corregidos")
+        
     else:
-        print("❌ No se obtuvieron datos para guardar")
-
+        print("❌ No se obtuvieron datos")
+    
     duration = time.time() - start_time
     minutes = duration / 60
-    print(f"\n⏱️ TIEMPO TOTAL: {minutes:.1f} minutos")
+    print(f"⏱️ Tiempo total: {minutes:.1f} minutos")
 
 if __name__ == "__main__":
-    # Asegurar que la carpeta data existe
     os.makedirs("data", exist_ok=True)
     main()
