@@ -15,10 +15,11 @@ HEADERS = {"token": TOKEN}
 MAX_RETRIES = 0  # Sin reintentos
 REQUEST_DELAY = 20  # 20 segundos entre páginas
 PAGE_SIZE = 10000  # 10,000 registros por página
+MAX_PAGES = 100  # Límite máximo de páginas para 1,000,000 registros
 
 # ENDPOINTS
 ENDPOINTS = {
-    "Consulta_1": "System.InventoryItemsSnap.List.View1"
+    "Consulta_1": "System.MaterialTransactions.List.View1"
 }
 
 # Configuración de la consulta
@@ -26,9 +27,10 @@ QUERY_CONFIG = [
     {
         "name": "Consulta_1",
         "params": {
-            "orderby": "civi_snapshot_date desc",
+            "orderby": "ctxn_transaction_date desc",
             "take": str(PAGE_SIZE),
-            "skip": 0            
+            "skip": 0,
+            "where": "ctxn_movement_type ilike '261%%' and (ctxn_transaction_date > current_date - 120) and (ctxn_warehouse_code ilike '1145') and (ctxn_primary_uom_code ilike 'Und')"
         }
     }
 ]
@@ -44,7 +46,6 @@ def build_url(endpoint, params):
 def extract_message_data(data):
     """Extrae el array 'message' de la respuesta JSON"""
     try:
-        # Verificar si la respuesta tiene la estructura esperada
         if isinstance(data, dict) and 'message' in data:
             message_data = data['message']
             
@@ -56,33 +57,35 @@ def extract_message_data(data):
                 return None
         else:
             print(f"⚠️  No se encontró clave 'message' en la respuesta")
-            print(f"🔍 Keys disponibles: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+            if isinstance(data, dict):
+                print(f"🔍 Keys disponibles: {list(data.keys())}")
             return None
             
     except Exception as e:
         print(f"❌ Error extrayendo datos de 'message': {e}")
         return None
 
-def fetch_data_page(url, name, page_number):
+def fetch_data_page(url, name, page_number, expected_records=PAGE_SIZE):
     print(f"📄 Consultando página {page_number} para {name}")
+    print(f"🔗 URL: {url}")
+    
     try:
-        response = requests.get(url, headers=HEADERS, timeout=60)
+        response = requests.get(url, headers=HEADERS, timeout=120)  # Timeout aumentado
         response.raise_for_status()
         
         data = response.json()
         print(f"📋 Tipo de respuesta: {type(data)}")
-        
-        # Guardar respuesta completa para debug
-        debug_filename = f"debug_page_{page_number}.json"
-        with open(debug_filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        print(f"📁 Respuesta guardada en: {debug_filename}")
         
         # Extraer el array 'message'
         message_array = extract_message_data(data)
         
         if not message_array:
             print(f"❌ No se pudo extraer el array 'message' de la página {page_number}")
+            # Guardar respuesta para debug
+            debug_filename = f"debug_error_page_{page_number}.json"
+            with open(debug_filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            print(f"📁 Respuesta error guardada en: {debug_filename}")
             return None, False
         
         # Crear DataFrame directamente desde el array message
@@ -96,17 +99,21 @@ def fetch_data_page(url, name, page_number):
         df["load_timestamp"] = datetime.now().isoformat()
         df["page_number"] = page_number
         
-        print(f"📊 Página {page_number}: {len(df)} registros, {len(df.columns)} columnas")
-        print(f"🏷️  Primeras 5 columnas: {list(df.columns)[:5]}")
-        
-        # Mostrar preview de los datos
-        print(f"👀 Preview de los datos:")
-        print(df.head(2).to_string(index=False))
+        print(f"📊 Página {page_number}: {len(df)} registros obtenidos (esperados: {expected_records})")
+        print(f"🏷️  Columnas: {len(df.columns)}")
         
         # Verificar si hay más páginas
-        has_more_pages = len(df) == PAGE_SIZE
+        # Si obtenemos menos registros de los esperados, probablemente es la última página
+        has_more_pages = len(df) >= expected_records
+        
+        if not has_more_pages:
+            print(f"📄 Última página detectada: se obtuvieron {len(df)} registros de {expected_records} esperados")
         
         return df, has_more_pages
+        
+    except requests.exceptions.Timeout:
+        print(f"⏰ Timeout en página {page_number}")
+        return None, True  # Reintentar si hay timeout
         
     except Exception as e:
         print(f"❌ Error en página {page_number}: {str(e)}")
@@ -130,12 +137,6 @@ def save_data_csv(df, name):
             print(f"📈 Registros: {len(df)}")
             print(f"🏷️  Columnas: {len(df.columns)}")
             
-            # Mostrar estructura del CSV
-            print("\n📋 ESTRUCTURA DEL CSV:")
-            print(f"Columnas: {list(df.columns)}")
-            print(f"\nPrimeras 2 filas:")
-            print(df.head(2).to_string(index=False))
-            
             return path
         else:
             print("❌ Error: No se pudo crear el archivo CSV")
@@ -147,7 +148,7 @@ def save_data_csv(df, name):
 
 def main():
     print("🚀 Iniciando consulta paginada para Histórico de Inventarios")
-    print("🎯 Extrayendo específicamente el array 'message' para CSV")
+    print(f"🎯 Objetivo: 700,000 registros con paginación de {PAGE_SIZE} por página")
     
     start_time = time.time()
     all_data = pd.DataFrame()
@@ -155,34 +156,57 @@ def main():
     name = query["name"]
     page_number = 1
     has_more_pages = True
+    total_expected = 700000
     
-    while has_more_pages and page_number <= 10:  # Límite de 10 páginas para prueba
+    while has_more_pages and page_number <= MAX_PAGES:
+        # Actualizar parámetros de paginación
         query_params = query["params"].copy()
         query_params["skip"] = (page_number - 1) * PAGE_SIZE
+        query_params["take"] = PAGE_SIZE
         
         url = build_url(ENDPOINTS[name], query_params)
-        print(f"\n🔗 Página {page_number}: {url}")
+        print(f"\n{'='*60}")
+        print(f"📖 Página {page_number} - Skip: {query_params['skip']}")
+        print(f"{'='*60}")
         
-        df_page, has_more_pages = fetch_data_page(url, name, page_number)
+        df_page, has_more_pages = fetch_data_page(url, name, page_number, PAGE_SIZE)
         
         if df_page is not None and not df_page.empty:
             # Concatenar datos
             all_data = pd.concat([all_data, df_page], ignore_index=True)
-            print(f"📦 Total acumulado: {len(all_data)} registros")
+            current_total = len(all_data)
+            
+            print(f"📦 Total acumulado: {current_total:,} registros")
+            print(f"📊 Progreso: {(current_total/total_expected*100):.1f}%")
+            
+            # Guardar checkpoint cada 50,000 registros
+            if current_total % 50000 == 0:
+                checkpoint_name = f"checkpoint_{current_total}_{datetime.now().strftime('%H-%M-%S')}.csv"
+                checkpoint_path = f"data/{checkpoint_name}"
+                df_page.to_csv(checkpoint_path, index=False, encoding='utf-8')
+                print(f"💾 Checkpoint guardado: {checkpoint_path}")
             
             if has_more_pages:
-                print(f"⏳ Esperando {REQUEST_DELAY} segundos...")
+                print(f"⏳ Esperando {REQUEST_DELAY} segundos para la siguiente página...")
                 time.sleep(REQUEST_DELAY)
+            else:
+                print(f"🎯 Se alcanzó el final de los datos en página {page_number}")
+                
         else:
-            print(f"❌ No hay más datos o error en página {page_number}")
+            print(f"❌ Error en página {page_number}, deteniendo la consulta")
             break
         
         page_number += 1
+        
+        # Break temprano si ya tenemos los 700,000 registros
+        if len(all_data) >= total_expected:
+            print(f"🎉 ¡Meta alcanzada! {len(all_data):,} registros obtenidos")
+            break
 
     # Guardar datos finales
     if not all_data.empty:
         print(f"\n💾 Guardando datos finales...")
-        print(f"📊 Total de registros a guardar: {len(all_data)}")
+        print(f"📊 Total de registros obtenidos: {len(all_data):,}")
         print(f"🏷️  Total de columnas: {len(all_data.columns)}")
         
         csv_path = save_data_csv(all_data, name)
@@ -190,14 +214,17 @@ def main():
         if csv_path:
             print(f"\n🎉 PROCESO COMPLETADO EXITOSAMENTE")
             print(f"📁 Archivo CSV: {csv_path}")
-            print(f"📊 Total registros: {len(all_data)}")
+            print(f"📊 Total registros: {len(all_data):,}")
+            print(f"📄 Total páginas procesadas: {page_number - 1}")
         else:
             print("❌ Error al guardar el archivo CSV final")
     else:
         print("❌ No se obtuvieron datos para guardar")
 
     duration = time.time() - start_time
-    print(f"\n⏱️  Tiempo total: {duration:.2f} segundos")
+    minutes = duration / 60
+    print(f"\n⏱️  Tiempo total: {duration:.2f} segundos ({minutes:.1f} minutos)")
+    print(f"📊 Velocidad: {len(all_data)/duration:.1f} registros/segundo")
 
 if __name__ == "__main__":
     main()
