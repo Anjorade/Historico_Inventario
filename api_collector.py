@@ -37,7 +37,10 @@ QUERY_CONFIG = [
 def debug_response_structure(data, page_number):
     """Analiza en profundidad la estructura de la respuesta"""
     try:
-        debug_filename = f"debug_structure_page_{page_number}.txt"
+        # Guardar en carpeta data
+        os.makedirs("data", exist_ok=True)
+        debug_filename = f"data/debug_structure_page_{page_number}.txt"
+        
         with open(debug_filename, 'w', encoding='utf-8') as f:
             f.write("=== ESTRUCTURA COMPLETA DE LA RESPUESTA ===\n")
             f.write(f"Tipo: {type(data)}\n")
@@ -128,17 +131,50 @@ def extract_message_data(data):
         print(f"❌ Error extrayendo datos de 'message': {e}")
         return None
 
+def fix_encoding_issues(df):
+    """Corrige problemas de encoding en las columnas de texto"""
+    print("🔧 Corrigiendo problemas de encoding...")
+    
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            # Convertir a string y luego manejar encoding
+            df[col] = df[col].astype(str)
+            
+            # Intentar corregir encoding mal interpretado
+            # Si los caracteres están mal interpretados como Latin-1 pero son UTF-8
+            try:
+                # Verificar si hay caracteres que parecen mal encoding
+                sample_data = df[col].head(100).dropna()
+                if not sample_data.empty:
+                    # Detectar patrones comunes de mal encoding
+                    has_encoding_issues = sample_data.str.contains('Ã|Â|â|€|™', regex=True).any()
+                    
+                    if has_encoding_issues:
+                        print(f"   🛠️  Corrigiendo encoding en columna: {col}")
+                        # Intentar reparar encoding mal interpretado
+                        df[col] = df[col].apply(lambda x: 
+                            x.encode('latin-1').decode('utf-8') if isinstance(x, str) else x
+                        )
+            except:
+                # Si falla la corrección, mantener los datos originales
+                pass
+    
+    return df
+
 def fetch_data_page(url, name, page_number, expected_records=PAGE_SIZE):
     print(f"📄 Consultando página {page_number} para {name}")
     
     try:
-        response = requests.get(url, headers=HEADERS, timeout=90)  # Timeout optimizado
+        response = requests.get(url, headers=HEADERS, timeout=90)
         response.raise_for_status()
+        
+        # Forzar encoding UTF-8 en la respuesta
+        response.encoding = 'utf-8'
         
         # Obtener la respuesta JSON
         data = response.json()
         
-        # 🔍 Debug solo para las primeras 2 páginas para no hacer lento el proceso
+        # 🔍 Debug solo para las primeras 2 páginas
         if page_number <= 2:
             debug_response_structure(data, page_number)
         
@@ -147,6 +183,11 @@ def fetch_data_page(url, name, page_number, expected_records=PAGE_SIZE):
         
         if not message_array:
             print(f"❌ No se pudo extraer el array 'message' de la página {page_number}")
+            # Guardar respuesta para debug en carpeta data
+            debug_filename = f"data/debug_error_page_{page_number}.json"
+            with open(debug_filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            print(f"📁 Respuesta error guardada en: {debug_filename}")
             return None, False
         
         # Crear DataFrame directamente desde el array message
@@ -155,6 +196,9 @@ def fetch_data_page(url, name, page_number, expected_records=PAGE_SIZE):
         if df.empty:
             print(f"⚠️  DataFrame vacío después de procesar 'message'")
             return None, False
+        
+        # Corregir problemas de encoding
+        df = fix_encoding_issues(df)
         
         # Añadir metadatos
         df["load_timestamp"] = datetime.now().isoformat()
@@ -179,34 +223,48 @@ def fetch_data_page(url, name, page_number, expected_records=PAGE_SIZE):
         return None, False
 
 def save_data_csv_chunked(df, name, max_size_mb=90):
-    """Guarda el DataFrame en múltiples archivos CSV que no excedan el tamaño máximo"""
+    """Guarda el DataFrame en múltiples archivos CSV en la carpeta data"""
     os.makedirs("data", exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     base_filename = f"Historico_{timestamp}"
     
-    # Dividir en chunks de aproximadamente 400,000 filas cada uno
-    rows_per_chunk = 400000
-    total_chunks = (len(df) // rows_per_chunk) + 1
-    saved_files = []
-    
-    print(f"📦 Dividiendo {len(df):,} registros en {total_chunks} chunks...")
-    
-    for chunk_num in range(total_chunks):
-        start_idx = chunk_num * rows_per_chunk
-        end_idx = min((chunk_num + 1) * rows_per_chunk, len(df))
-        chunk_df = df.iloc[start_idx:end_idx]
+    # Si son menos de 400,000 registros, guardar como un solo archivo
+    if len(df) <= 400000:
+        single_filename = f"{base_filename}.csv"
+        single_path = f"data/{single_filename}"
         
-        if not chunk_df.empty:
-            chunk_filename = f"{base_filename}_part{chunk_num + 1}_of{total_chunks}.csv"
-            chunk_path = f"data/{chunk_filename}"
+        # Guardar con encoding UTF-8 y forzar comillas para textos con caracteres especiales
+        df.to_csv(single_path, index=False, encoding='utf-8', quoting=1)  # quoting=1 forzar comillas
+        
+        file_size = os.path.getsize(single_path) / 1024 / 1024
+        print(f"💾 Archivo único: {len(df):,} filas, {file_size:.2f} MB")
+        return [single_path]
+    else:
+        # Dividir en chunks de aproximadamente 400,000 filas cada uno
+        rows_per_chunk = 400000
+        total_chunks = (len(df) // rows_per_chunk) + 1
+        saved_files = []
+        
+        print(f"📦 Dividiendo {len(df):,} registros en {total_chunks} chunks...")
+        
+        for chunk_num in range(total_chunks):
+            start_idx = chunk_num * rows_per_chunk
+            end_idx = min((chunk_num + 1) * rows_per_chunk, len(df))
+            chunk_df = df.iloc[start_idx:end_idx]
             
-            chunk_df.to_csv(chunk_path, index=False, encoding='utf-8')
-            chunk_size = os.path.getsize(chunk_path) / 1024 / 1024
-            
-            print(f"💾 Chunk {chunk_num + 1}: {len(chunk_df):,} filas, {chunk_size:.2f} MB")
-            saved_files.append(chunk_path)
-    
-    return saved_files
+            if not chunk_df.empty:
+                chunk_filename = f"{base_filename}_part{chunk_num + 1}_of{total_chunks}.csv"
+                chunk_path = f"data/{chunk_filename}"
+                
+                # Guardar con encoding UTF-8 y forzar comillas
+                chunk_df.to_csv(chunk_path, index=False, encoding='utf-8', quoting=1)
+                
+                chunk_size = os.path.getsize(chunk_path) / 1024 / 1024
+                
+                print(f"💾 Chunk {chunk_num + 1}: {len(chunk_df):,} filas, {chunk_size:.2f} MB")
+                saved_files.append(chunk_path)
+        
+        return saved_files
 
 def main():
     print("🚀 INICIANDO CONSULTA MANUAL - Histórico de Inventarios")
@@ -280,10 +338,19 @@ def main():
         
         if saved_files:
             print(f"\n🎉 PROCESO COMPLETADO EXITOSAMENTE")
-            print(f"📁 Archivos generados:")
+            print(f"📁 Archivos generados en carpeta 'data':")
             for file_path in saved_files:
                 file_size = os.path.getsize(file_path) / 1024 / 1024
                 print(f"   • {os.path.basename(file_path)} ({file_size:.1f} MB)")
+            
+            # Mostrar preview del primer archivo
+            if saved_files:
+                try:
+                    preview_df = pd.read_csv(saved_files[0], encoding='utf-8', nrows=3)
+                    print(f"\n👀 Preview del primer archivo:")
+                    print(preview_df.to_string(index=False))
+                except:
+                    print("\n⚠️  No se pudo mostrar preview del archivo")
         else:
             print("❌ Error al guardar los archivos CSV")
     else:
