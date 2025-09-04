@@ -4,18 +4,16 @@ import pandas as pd
 import time
 from datetime import datetime
 from urllib.parse import quote
-import json
 
-# Configuración segura desde secretos
+# Configuración desde variables de entorno
 TOKEN = os.getenv("API_TOKEN")
 BASE_URL = os.getenv("API_BASE_URL")
 HEADERS = {"token": TOKEN}
 
-# Configuración optimizada para mayor velocidad
-MAX_RETRIES = 0  # Sin reintentos
-REQUEST_DELAY = 15  # Reducido a 15 segundos entre páginas
-PAGE_SIZE = 15000  # Aumentado a 15,000 registros por página
-MAX_PAGES = 47  # Para 700,000 registros (700,000 / 15,000 = 46.67 → 47 páginas)
+# Configuración - Sin modificar delays
+REQUEST_DELAY = 20  # Mantener 20 segundos entre páginas
+PAGE_SIZE = 15000
+MAX_PAGES = 47
 
 # ENDPOINTS - Actualizado
 ENDPOINTS = {
@@ -27,81 +25,15 @@ QUERY_CONFIG = [
     {
         "name": "Consulta_1",
         "params": {
-            "orderby": "civi_snapshot_date desc",  # Campo actualizado
+            "orderby": "civi_snapshot_date desc",
             "take": str(PAGE_SIZE),
             "skip": 0
         }
     }
 ]
 
-def debug_response_structure(data, page_number):
-    """Analiza en profundidad la estructura de la respuesta"""
-    try:
-        # Guardar en carpeta data
-        os.makedirs("data", exist_ok=True)
-        debug_filename = f"data/debug_structure_page_{page_number}.txt"
-        
-        with open(debug_filename, 'w', encoding='utf-8') as f:
-            f.write("=== ESTRUCTURA COMPLETA DE LA RESPUESTA ===\n")
-            f.write(f"Tipo: {type(data)}\n")
-            f.write(f"Página: {page_number}\n")
-            f.write(f"Timestamp: {datetime.now().isoformat()}\n\n")
-            
-            if isinstance(data, dict):
-                f.write("🔑 KEYS DEL OBJETO PRINCIPAL:\n")
-                f.write("=" * 50 + "\n")
-                for key, value in data.items():
-                    f.write(f"  {key}: {type(value)}")
-                    if isinstance(value, (list, dict)):
-                        if isinstance(value, list):
-                            f.write(f" (elementos: {len(value)})")
-                        else:
-                            f.write(f" (keys: {len(value)})")
-                    f.write("\n")
-                
-                # Profundizar en la estructura de 'message' si existe
-                if 'message' in data and isinstance(data['message'], list):
-                    f.write("\n📋 ESTRUCTURA DEL ARRAY 'message':\n")
-                    f.write("=" * 50 + "\n")
-                    if len(data['message']) > 0:
-                        first_item = data['message'][0]
-                        f.write(f"Primer elemento tipo: {type(first_item)}\n")
-                        if isinstance(first_item, dict):
-                            f.write(f"Keys del primer elemento: {list(first_item.keys())}\n")
-                            f.write(f"Número de keys: {len(first_item.keys())}\n")
-                        
-                        f.write(f"\nTotal elementos en 'message': {len(data['message'])}\n")
-                    else:
-                        f.write("Array 'message' está vacío\n")
-                
-                # Mostrar también otras keys importantes
-                for key in ['total', 'count', 'records', 'items']:
-                    if key in data:
-                        f.write(f"\n📊 {key.upper()}: {data[key]} (tipo: {type(data[key])})\n")
-            
-            elif isinstance(data, list):
-                f.write("📋 LA RESPUESTA ES DIRECTAMENTE UN ARRAY:\n")
-                f.write(f"Total elementos: {len(data)}\n")
-                if len(data) > 0:
-                    f.write(f"Tipo de elementos: {type(data[0])}\n")
-                    if isinstance(data[0], dict):
-                        f.write(f"Keys del primer elemento: {list(data[0].keys())}\n")
-            
-            f.write("\n=== MUESTRA DEL CONTENIDO (primeros 2000 caracteres) ===\n")
-            f.write("=" * 60 + "\n")
-            sample_content = json.dumps(data, indent=2, ensure_ascii=False)
-            f.write(sample_content[:2000])
-            if len(sample_content) > 2000:
-                f.write("\n... [CONTINÚA]")
-        
-        print(f"📁 Debug de estructura guardado en: {debug_filename}")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error en debug_response_structure: {e}")
-        return False
-
 def build_url(endpoint, params):
+    """Construye URL sin modificaciones"""
     param_parts = []
     for key, value in params.items():
         encoded_value = quote(str(value))
@@ -109,108 +41,71 @@ def build_url(endpoint, params):
     url = f"{BASE_URL}{endpoint}?{'&'.join(param_parts)}"
     return url
 
+def fix_encoding(text):
+    """Corrige caracteres especiales de forma optimizada"""
+    if not isinstance(text, str):
+        return text
+    
+    # Mapa de corrección de caracteres mal codificados
+    encoding_fixes = {
+        'Ã': 'Í', 'Ã': 'í', 'Ã¡': 'á', 'Ã©': 'é',
+        'Ã­': 'í', 'Ã³': 'ó', 'Ãº': 'ú', 'Ã±': 'ñ',
+        'Ã': 'Ñ', 'Â¡': '¡', 'Â¿': '¿', 'â': '"',
+        'â': '"', 'â': "'", 'â': "'", 'â¦': '...'
+    }
+    
+    for wrong, correct in encoding_fixes.items():
+        text = text.replace(wrong, correct)
+    
+    return text
+
+def process_dataframe_encoding(df):
+    """Procesa DataFrame para corregir encoding en columnas de texto"""
+    text_columns = df.select_dtypes(include=['object']).columns
+    
+    for column in text_columns:
+        df[column] = df[column].apply(lambda x: fix_encoding(x) if isinstance(x, str) else x)
+    
+    return df
+
 def extract_message_data(data):
     """Extrae el array 'message' de la respuesta JSON"""
     try:
         if isinstance(data, dict) and 'message' in data:
             message_data = data['message']
-            
             if isinstance(message_data, list):
-                print(f"✅ Array 'message' encontrado con {len(message_data)} elementos")
                 return message_data
-            else:
-                print(f"⚠️  'message' no es un array, es: {type(message_data)}")
-                return None
-        else:
-            print(f"⚠️  No se encontró clave 'message' en la respuesta")
-            if isinstance(data, dict):
-                print(f"🔍 Keys disponibles: {list(data.keys())}")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Error extrayendo datos de 'message': {e}")
+        return None
+    except:
         return None
 
-def fix_encoding_issues(df):
-    """Corrige problemas de encoding en las columnas de texto"""
-    print("🔧 Corrigiendo problemas de encoding...")
-    
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            # Convertir a string y luego manejar encoding
-            df[col] = df[col].astype(str)
-            
-            # Intentar corregir encoding mal interpretado
-            # Si los caracteres están mal interpretados como Latin-1 pero son UTF-8
-            try:
-                # Verificar si hay caracteres que parecen mal encoding
-                sample_data = df[col].head(100).dropna()
-                if not sample_data.empty:
-                    # Detectar patrones comunes de mal encoding
-                    has_encoding_issues = sample_data.str.contains('Ã|Â|â|€|™', regex=True).any()
-                    
-                    if has_encoding_issues:
-                        print(f"   🛠️  Corrigiendo encoding en columna: {col}")
-                        # Intentar reparar encoding mal interpretado
-                        df[col] = df[col].apply(lambda x: 
-                            x.encode('latin-1').decode('utf-8') if isinstance(x, str) else x
-                        )
-            except:
-                # Si falla la corrección, mantener los datos originales
-                pass
-    
-    return df
-
 def fetch_data_page(url, name, page_number, expected_records=PAGE_SIZE):
+    """Obtiene una página de datos"""
     print(f"📄 Consultando página {page_number} para {name}")
     
     try:
-        response = requests.get(url, headers=HEADERS, timeout=90)
+        response = requests.get(url, headers=HEADERS, timeout=60)
+        response.encoding = 'utf-8'
         response.raise_for_status()
         
-        # Forzar encoding UTF-8 en la respuesta
-        response.encoding = 'utf-8'
-        
-        # Obtener la respuesta JSON
         data = response.json()
-        
-        # 🔍 Debug solo para las primeras 2 páginas
-        if page_number <= 2:
-            debug_response_structure(data, page_number)
-        
-        # Extraer el array 'message'
         message_array = extract_message_data(data)
         
         if not message_array:
-            print(f"❌ No se pudo extraer el array 'message' de la página {page_number}")
-            # Guardar respuesta para debug en carpeta data
-            debug_filename = f"data/debug_error_page_{page_number}.json"
-            with open(debug_filename, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            print(f"📁 Respuesta error guardada en: {debug_filename}")
             return None, False
         
-        # Crear DataFrame directamente desde el array message
         df = pd.DataFrame(message_array)
         
         if df.empty:
-            print(f"⚠️  DataFrame vacío después de procesar 'message'")
             return None, False
         
-        # Corregir problemas de encoding
-        df = fix_encoding_issues(df)
+        # Corregir encoding
+        df = process_dataframe_encoding(df)
         
-        # Añadir metadatos
-        df["load_timestamp"] = datetime.now().isoformat()
-        df["page_number"] = page_number
-        
-        print(f"📊 Página {page_number}: {len(df)} registros obtenidos")
+        print(f"✅ Página {page_number}: {len(df):,} registros obtenidos")
         
         # Verificar si hay más páginas
         has_more_pages = len(df) >= expected_records
-        
-        if not has_more_pages:
-            print(f"📄 Última página detectada: se obtuvieron {len(df)} registros")
         
         return df, has_more_pages
         
@@ -222,61 +117,51 @@ def fetch_data_page(url, name, page_number, expected_records=PAGE_SIZE):
         print(f"❌ Error en página {page_number}: {str(e)}")
         return None, False
 
-def save_data_csv_chunked(df, name, max_size_mb=90):
-    """Guarda el DataFrame en múltiples archivos CSV en la carpeta data"""
+def save_csv_chunks(df, base_filename):
+    """Divide y guarda el DataFrame en múltiples archivos CSV"""
     os.makedirs("data", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    base_filename = f"Historico_{timestamp}"
+    saved_files = []
     
-    # Si son menos de 400,000 registros, guardar como un solo archivo
-    if len(df) <= 400000:
-        single_filename = f"{base_filename}.csv"
-        single_path = f"data/{single_filename}"
+    # Dividir en chunks de 300,000 registros cada uno
+    chunk_size = 300000
+    total_records = len(df)
+    total_chunks = (total_records // chunk_size) + 1
+    
+    print(f"📦 Dividiendo {total_records:,} registros en {total_chunks} chunks...")
+    
+    for chunk_num in range(total_chunks):
+        start_idx = chunk_num * chunk_size
+        end_idx = min((chunk_num + 1) * chunk_size, total_records)
+        chunk_df = df.iloc[start_idx:end_idx]
         
-        # Guardar con encoding UTF-8 y forzar comillas para textos con caracteres especiales
-        df.to_csv(single_path, index=False, encoding='utf-8', quoting=1)  # quoting=1 forzar comillas
-        
-        file_size = os.path.getsize(single_path) / 1024 / 1024
-        print(f"💾 Archivo único: {len(df):,} filas, {file_size:.2f} MB")
-        return [single_path]
-    else:
-        # Dividir en chunks de aproximadamente 400,000 filas cada uno
-        rows_per_chunk = 400000
-        total_chunks = (len(df) // rows_per_chunk) + 1
-        saved_files = []
-        
-        print(f"📦 Dividiendo {len(df):,} registros en {total_chunks} chunks...")
-        
-        for chunk_num in range(total_chunks):
-            start_idx = chunk_num * rows_per_chunk
-            end_idx = min((chunk_num + 1) * rows_per_chunk, len(df))
-            chunk_df = df.iloc[start_idx:end_idx]
+        if not chunk_df.empty:
+            if total_chunks > 1:
+                filename = f"{base_filename}_part{chunk_num + 1}_of{total_chunks}.csv"
+            else:
+                filename = f"{base_filename}.csv"
             
-            if not chunk_df.empty:
-                chunk_filename = f"{base_filename}_part{chunk_num + 1}_of{total_chunks}.csv"
-                chunk_path = f"data/{chunk_filename}"
-                
-                # Guardar con encoding UTF-8 y forzar comillas
-                chunk_df.to_csv(chunk_path, index=False, encoding='utf-8', quoting=1)
-                
-                chunk_size = os.path.getsize(chunk_path) / 1024 / 1024
-                
-                print(f"💾 Chunk {chunk_num + 1}: {len(chunk_df):,} filas, {chunk_size:.2f} MB")
-                saved_files.append(chunk_path)
-        
-        return saved_files
+            filepath = f"data/{filename}"
+            
+            # Guardar como CSV sin comprimir con UTF-8
+            chunk_df.to_csv(filepath, index=False, encoding='utf-8')
+            
+            file_size = os.path.getsize(filepath) / 1024 / 1024
+            print(f"💾 {filename}: {len(chunk_df):,} filas, {file_size:.2f} MB")
+            
+            saved_files.append(filepath)
+    
+    return saved_files
 
 def main():
-    print("🚀 INICIANDO CONSULTA MANUAL - Histórico de Inventarios")
+    print("🚀 INICIANDO CONSULTA - Histórico de Inventarios")
     print("=" * 60)
     print(f"📊 Página size: {PAGE_SIZE:,} registros")
-    print(f"🎯 Total esperado: 700,000 registros")
-    print(f"📈 Páginas estimadas: {MAX_PAGES}")
-    print(f"⏱️  Tiempo estimado: 20-25 minutos")
+    print(f"⏱️ Delay entre páginas: {REQUEST_DELAY} segundos")
+    print(f"🎯 Total esperado: {PAGE_SIZE * MAX_PAGES:,} registros")
     print("=" * 60)
     
     start_time = time.time()
-    all_data = pd.DataFrame()
+    all_data = []
     query = QUERY_CONFIG[0]
     name = query["name"]
     page_number = 1
@@ -285,72 +170,62 @@ def main():
     
     try:
         while has_more_pages and page_number <= MAX_PAGES:
-            # Actualizar parámetros de paginación
+            # Construir URL con parámetros originales
             query_params = query["params"].copy()
             query_params["skip"] = (page_number - 1) * PAGE_SIZE
             query_params["take"] = PAGE_SIZE
             
             url = build_url(ENDPOINTS[name], query_params)
-            print(f"\n📖 Página {page_number} - Skip: {query_params['skip']:,}")
             
             df_page, has_more_pages = fetch_data_page(url, name, page_number, PAGE_SIZE)
             
             if df_page is not None and not df_page.empty:
-                # Concatenar datos
-                all_data = pd.concat([all_data, df_page], ignore_index=True)
-                current_total = len(all_data)
+                all_data.append(df_page)
+                current_total = sum(len(df) for df in all_data)
                 
-                print(f"📦 Total acumulado: {current_total:,} registros")
-                print(f"📊 Progreso: {(current_total/total_expected*100):.1f}%")
-                
-                # Calcular tiempo estimado restante
-                elapsed_time = time.time() - start_time
-                if page_number > 1:
-                    time_per_page = elapsed_time / (page_number - 1)
-                    remaining_pages = MAX_PAGES - page_number
-                    estimated_remaining = time_per_page * remaining_pages
-                    print(f"⏱️  Tiempo estimado restante: {estimated_remaining/60:.1f} minutos")
+                # Mostrar progreso cada 2 páginas
+                if page_number % 2 == 0:
+                    progress = (current_total / total_expected * 100)
+                    print(f"📊 Progreso: {current_total:,} registros ({progress:.1f}%)")
                 
                 if has_more_pages:
                     print(f"⏳ Esperando {REQUEST_DELAY} segundos...")
                     time.sleep(REQUEST_DELAY)
-                else:
-                    print(f"🎯 Se alcanzó el final de los datos")
-                    
             else:
-                print(f"❌ Error en página {page_number}, deteniendo la consulta")
+                print(f"⏹️ Fin de datos en página {page_number}")
                 break
             
             page_number += 1
             
             if len(all_data) >= total_expected:
-                print(f"🎉 ¡Meta alcanzada! {len(all_data):,} registros obtenidos")
+                print(f"🎉 ¡Meta alcanzada! {len(all_data):,} registros")
                 break
 
     except KeyboardInterrupt:
-        print("\n⏹️  Ejecución interrumpida por el usuario")
+        print("\n⏹️ Ejecución interrumpida por el usuario")
     
-    # Guardar datos finales
-    if not all_data.empty:
-        print(f"\n💾 Guardando {len(all_data):,} registros...")
+    # Consolidar y guardar datos
+    if all_data:
+        final_df = pd.concat(all_data, ignore_index=True)
+        total_records = len(final_df)
         
-        saved_files = save_data_csv_chunked(all_data, name)
+        print(f"\n💾 Guardando {total_records:,} registros...")
+        
+        # Generar nombre base con timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        base_filename = f"Historico_{timestamp}"
+        
+        # Guardar en chunks
+        saved_files = save_csv_chunks(final_df, base_filename)
         
         if saved_files:
-            print(f"\n🎉 PROCESO COMPLETADO EXITOSAMENTE")
+            print(f"\n✅ PROCESO COMPLETADO EXITOSAMENTE")
             print(f"📁 Archivos generados en carpeta 'data':")
             for file_path in saved_files:
                 file_size = os.path.getsize(file_path) / 1024 / 1024
                 print(f"   • {os.path.basename(file_path)} ({file_size:.1f} MB)")
             
-            # Mostrar preview del primer archivo
-            if saved_files:
-                try:
-                    preview_df = pd.read_csv(saved_files[0], encoding='utf-8', nrows=3)
-                    print(f"\n👀 Preview del primer archivo:")
-                    print(preview_df.to_string(index=False))
-                except:
-                    print("\n⚠️  No se pudo mostrar preview del archivo")
+            print(f"📊 Total registros guardados: {total_records:,}")
         else:
             print("❌ Error al guardar los archivos CSV")
     else:
@@ -358,9 +233,9 @@ def main():
 
     duration = time.time() - start_time
     minutes = duration / 60
-    print(f"\n⏱️  TIEMPO TOTAL: {duration:.2f} segundos ({minutes:.1f} minutos)")
-    print(f"📊 Velocidad: {len(all_data)/duration:.1f} registros/segundo")
-    print(f"📈 Rendimiento: {len(all_data)/minutes:.0f} registros/minuto")
+    print(f"\n⏱️ TIEMPO TOTAL: {minutes:.1f} minutos")
 
 if __name__ == "__main__":
+    # Asegurar que la carpeta data existe
+    os.makedirs("data", exist_ok=True)
     main()
