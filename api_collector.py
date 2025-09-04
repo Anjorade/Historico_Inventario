@@ -13,7 +13,7 @@ HEADERS = {"token": TOKEN}
 # Configuración - Sin modificar delays
 REQUEST_DELAY = 20  # Mantener 20 segundos entre páginas
 PAGE_SIZE = 15000
-MAX_PAGES = 47
+MAX_PAGES = 4
 
 # ENDPOINTS - Actualizado
 ENDPOINTS = {
