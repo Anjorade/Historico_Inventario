@@ -9,11 +9,13 @@ env:
 
 jobs:
   collect-data:
-    runs-on: ubuntu-latest  # Usar la última versión para mejor rendimiento
-    timeout-minutes: 45  # Reducido porque debería ser más rápido
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 horas para 700k registros con delay de 20s
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch completo para manejar archivos grandes
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -27,21 +29,31 @@ jobs:
     - name: Run API collector
       run: python api_collector.py
 
-    - name: List output files
+    - name: Verify and list CSV files
       run: |
-        echo "📂 Archivos generados:"
-        ls -lh data/
-        echo "📊 Tamaño de archivos:"
-        du -h data/*
+        echo "📂 Archivos CSV generados en carpeta data:"
+        ls -lh data/*.csv
+        echo ""
+        echo "📊 Espacio total utilizado:"
+        du -sh data/
 
-    - name: Upload CSV as artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: historico-inventarios-csv
-        path: data/*
-        retention-days: 2
-
-    - name: Clean up files
+    - name: Commit and push CSV files to repository
       run: |
-        # Limpiar archivos temporales
-        rm -f debug_*.txt debug_*.json
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Agregar todos los archivos CSV de la carpeta data
+        git add data/*.csv
+        
+        # Verificar si hay cambios para commit
+        if git diff --staged --quiet; then
+          echo "✅ No hay cambios nuevos para commit"
+        else
+          git commit -m "Auto-update: Datos históricos $(date +'%Y-%m-%d %H:%M')"
+          git push
+          echo "✅ Archivos CSV guardados en el repositorio"
+        fi
+
+    - name: Final cleanup
+      run: |
+        echo "✅ Proceso completado. Archivos CSV guardados en carpeta data/"
